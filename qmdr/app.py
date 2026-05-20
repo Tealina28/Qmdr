@@ -395,7 +395,7 @@ class QmdrApp:
                                     ft.Button("QQ 登录", icon=ft.Icons.LOGIN, on_click=lambda e: self.page.run_task(self.on_qr_login, "qq")),
                                     ft.Button("微信登录", icon=ft.Icons.LOGIN, on_click=lambda e: self.page.run_task(self.on_qr_login, "wx")),
                                     ft.Button("刷新凭证", icon=ft.Icons.REFRESH, on_click=self.on_refresh_credential),
-                                    ft.Button("导出脱敏 JSON", icon=ft.Icons.SAVE, on_click=self.on_export_credential),
+                                    ft.Button("导出凭证 JSON", icon=ft.Icons.SAVE, on_click=self.on_export_credential),
                                 ],
                             ),
                         ],
@@ -795,7 +795,7 @@ class QmdrApp:
         default_name = "qqmusic_credential.json"
         try:
             selected = await self.file_picker.save_file(
-                dialog_title="导出脱敏凭证 JSON",
+                dialog_title="导出凭证 JSON",
                 file_name=default_name,
                 initial_directory=str(APP_ROOT),
                 file_type=ft.FilePickerFileType.CUSTOM,
@@ -811,7 +811,7 @@ class QmdrApp:
         except Exception as exc:  # noqa: BLE001
             self.toast(str(exc))
             return
-        self.toast(f"已导出脱敏 JSON: {path}")
+        self.toast(f"已导出凭证 JSON: {path}")
 
     async def on_qr_login(self, login_type: str) -> None:
         self.ensure_services()

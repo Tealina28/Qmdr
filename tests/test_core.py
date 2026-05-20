@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from qqmusic_api.login import Credential
 from qqmusic_api.song import SongFileType
 
 from qmdr.coordinator import DownloadCoordinator
@@ -38,6 +41,36 @@ class CoreTests(unittest.TestCase):
             legacy = root / "qqmusic_cred.pkl"
             service = CredentialService(credential_path=primary, legacy_path=legacy)
             self.assertEqual(service.candidate_paths(), [primary, legacy])
+
+    def test_credential_export_writes_raw_secret_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            credential_path = root / "qqmusic_cred.pkl"
+            export_path = root / "credential.json"
+            credential = Credential(
+                openid="openid-value",
+                refresh_token="refresh-token-value",
+                access_token="access-token-value",
+                expired_at=123,
+                musicid=456,
+                musickey="music-key-value",
+                unionid="unionid-value",
+                str_musicid="456",
+                refresh_key="refresh-key-value",
+                encrypt_uin="encrypt-uin-value",
+                login_type=2,
+            )
+            with credential_path.open("wb") as fp:
+                pickle.dump(credential, fp)
+
+            service = CredentialService(credential_path=credential_path, legacy_path=credential_path)
+            service.export_credential_to_json_file(export_path)
+
+            data = json.loads(export_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["access_token"], "access-token-value")
+            self.assertEqual(data["refresh_token"], "refresh-token-value")
+            self.assertEqual(data["musickey"], "music-key-value")
+            self.assertEqual(data["refresh_key"], "refresh-key-value")
 
     def test_download_dir_setting_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

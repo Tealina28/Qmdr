@@ -24,7 +24,7 @@ from .models import (
     QRLoginSession,
 )
 from .settings import legacy_credential_path, primary_credential_path
-from .utils import ensure_directory, mask_secret
+from .utils import ensure_directory
 
 
 class CredentialService:
@@ -237,9 +237,7 @@ class CredentialService:
     def _credential_export_data(self, credential: Credential) -> dict[str, Any]:
         export_data: dict[str, Any] = {}
         for key, value in credential.__dict__.items():
-            if key.lower() in {"access_token", "refresh_token", "musickey", "refresh_key"}:
-                export_data[key] = mask_secret(value)
-            elif isinstance(value, (str, int, float, bool, type(None))):
+            if isinstance(value, (str, int, float, bool, type(None))):
                 export_data[key] = value
             else:
                 export_data[key] = str(value)
