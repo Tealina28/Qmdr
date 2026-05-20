@@ -200,17 +200,13 @@ class CoreTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_playlist_folder_uses_unique_name_but_keeps_existing_legacy_folder(self) -> None:
+    def test_playlist_folder_uses_playlist_name_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             playlist = PlaylistItem(name="Daily", dir_id=123, tid=456)
             service = PlaylistService(MusicService())
 
-            self.assertEqual(service.playlist_folder(root, playlist, "user"), root / "user_123_Daily")
-
-            legacy = root / "Daily"
-            legacy.mkdir()
-            self.assertEqual(service.playlist_folder(root, playlist, "user"), legacy)
+            self.assertEqual(service.playlist_folder(root, playlist, "user"), root / "Daily")
 
 
 if __name__ == "__main__":

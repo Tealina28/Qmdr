@@ -51,11 +51,7 @@ class PlaylistService:
         return [self.music_service.song_from_raw(item) for item in songs or []]
 
     def playlist_folder(self, base_dir: Path, playlist: PlaylistItem, user_id: str) -> Path:
-        legacy_folder = base_dir / sanitize_filename(playlist.name)
-        if legacy_folder.exists():
-            return ensure_directory(legacy_folder)
-        folder_name = sanitize_filename(f"{user_id}_{playlist.dir_id}_{playlist.name}")
-        return ensure_directory(base_dir / folder_name)
+        return ensure_directory(base_dir / sanitize_filename(playlist.name))
 
     @staticmethod
     def _is_other_user(user_id: str, credential: Credential) -> bool:
