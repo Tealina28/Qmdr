@@ -14,7 +14,7 @@ from qqmusic_api.song import SongFileType
 from qmdr.coordinator import DownloadCoordinator
 from qmdr.credential_service import CredentialService
 from qmdr.models import DownloadEvent, DownloadOptions, DownloadResult, PlaylistItem, SongItem
-from qmdr.music import MusicService
+from qmdr.music import MetadataManager, MusicService
 from qmdr.playlist import (
     CredentialRequiredError,
     PlaylistLinkError,
@@ -25,6 +25,11 @@ from qmdr.playlist import (
 from qmdr.quality import get_quality_strategy
 from qmdr.settings import load_download_dir, save_download_dir
 from qmdr.utils import sanitize_filename
+
+
+async def _async_value(value):
+    """把字面量包成 awaitable，便于替换 get_lyrics 之类的协程方法。"""
+    return value
 
 
 class CoreTests(unittest.TestCase):
@@ -393,6 +398,267 @@ class CoreTests(unittest.TestCase):
 
         named = MusicService().song_from_raw({"mid": "003", "name": "name 风格"})
         self.assertEqual(named.title, "name 风格")
+
+    def test_bilingual_lrc_uses_blank_line_between_original_and_translation(self) -> None:
+        """逐行锁定「原文 → 空行 → 翻译」结构，避免被后续改动无声破坏。"""
+        lyric = "[00:01.00]原文第一行\n[00:05.00]原文第二行"
+        trans = "[00:01.00]translated one\n[00:05.00]translated two"
+
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    service.metadata.write_lyrics_files(
+                        audio,
+                        {"lyric": lyric, "trans": trans},
+                        DownloadOptions(download_dir=root, save_lyric_file=True),
+                    )
+                finally:
+                    await service.close()
+
+                lines = (root / "Artist - Song.lrc").read_text(encoding="utf-8-sig").split("\n")
+                self.assertEqual(
+                    lines,
+                    [
+                        "[00:01.00]原文第一行",
+                        "[00:05.00]原文第二行",
+                        "",  # 原文与翻译之间的空行
+                        "[00:01.00]translated one",
+                        "[00:05.00]translated two",
+                        "",  # 文件末尾换行
+                    ],
+                )
+
+        asyncio.run(run())
+
+    def test_bilingual_lrc_normalizes_whitespace(self) -> None:
+        """API 返回的首尾换行不应产生多余空行，空行数量必须恰好是一个。"""
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    service.metadata.write_lyrics_files(
+                        audio,
+                        {"lyric": "\n[00:01.00]原文\n\n", "trans": "\n[00:01.00]trans\n"},
+                        DownloadOptions(download_dir=root, save_lyric_file=True),
+                    )
+                finally:
+                    await service.close()
+
+                text = (root / "Artist - Song.lrc").read_text(encoding="utf-8-sig")
+                lines = text.split("\n")
+                self.assertEqual(lines, ["[00:01.00]原文", "", "[00:01.00]trans", ""])
+                self.assertEqual(text.count("\n\n"), 1)
+
+        asyncio.run(run())
+
+    def test_lyric_only_lrc_has_no_trailing_blank_block(self) -> None:
+        """没有翻译时不应留下空行块。"""
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    service.metadata.write_lyrics_files(
+                        audio,
+                        {"lyric": "[00:01.00]原文", "trans": ""},
+                        DownloadOptions(download_dir=root, save_lyric_file=True),
+                    )
+                finally:
+                    await service.close()
+
+                self.assertEqual(
+                    (root / "Artist - Song.lrc").read_text(encoding="utf-8-sig"),
+                    "[00:01.00]原文\n",
+                )
+
+        asyncio.run(run())
+
+    def test_write_lyrics_files_writes_lyric_file(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    written = service.metadata.write_lyrics_files(
+                        audio,
+                        {"lyric": "[00:01.00]hello", "trans": ""},
+                        DownloadOptions(download_dir=root, save_lyric_file=True),
+                    )
+                finally:
+                    await service.close()
+
+                self.assertEqual(written, [root / "Artist - Song.lrc"])
+                raw = (root / "Artist - Song.lrc").read_bytes()
+                # 带 BOM，避免播放器按本地代码页把中文读成乱码
+                self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+                self.assertIn("[00:01.00]hello", raw.decode("utf-8-sig"))
+                self.assertTrue(raw.endswith(b"\n"))
+
+        asyncio.run(run())
+
+    def test_write_lyrics_files_disabled_by_default(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    written = service.metadata.write_lyrics_files(
+                        audio, {"lyric": "[00:01.00]hello", "trans": ""}, DownloadOptions(download_dir=root)
+                    )
+                finally:
+                    await service.close()
+                self.assertEqual(written, [])
+                self.assertFalse((root / "Artist - Song.lrc").exists())
+
+        asyncio.run(run())
+
+    def test_write_lyrics_files_writes_translation_file(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                service = MusicService()
+                try:
+                    written = service.metadata.write_lyrics_files(
+                        audio,
+                        {"lyric": "[00:01.00]原文", "trans": "[00:01.00]translated"},
+                        DownloadOptions(download_dir=root, save_lyric_file=True, save_trans_lyric_file=True),
+                    )
+                finally:
+                    await service.close()
+
+                self.assertEqual(written, [root / "Artist - Song.lrc", root / "Artist - Song.trans.lrc"])
+                combined = (root / "Artist - Song.lrc").read_text(encoding="utf-8-sig")
+                self.assertIn("[00:01.00]原文", combined)
+                self.assertIn("[00:01.00]translated", combined)
+                self.assertEqual(
+                    (root / "Artist - Song.trans.lrc").read_text(encoding="utf-8-sig").strip(),
+                    "[00:01.00]translated",
+                )
+
+        asyncio.run(run())
+
+    def test_write_lyrics_files_skips_existing_without_overwrite(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                audio = root / "Artist - Song.mp3"
+                audio.write_bytes(b"audio")
+                lrc = root / "Artist - Song.lrc"
+                lrc.write_text("existing", encoding="utf-8")
+                service = MusicService()
+                try:
+                    written = service.metadata.write_lyrics_files(
+                        audio, {"lyric": "[00:01.00]new", "trans": ""}, DownloadOptions(download_dir=root, save_lyric_file=True)
+                    )
+                finally:
+                    await service.close()
+                self.assertEqual(written, [])
+                self.assertEqual(lrc.read_text(encoding="utf-8"), "existing")
+
+        asyncio.run(run())
+
+    def test_has_lyric_files_reflects_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            audio = root / "Artist - Song.mp3"
+            audio.write_bytes(b"audio")
+            self.assertTrue(MetadataManager.has_lyric_files(audio, DownloadOptions(download_dir=root)))
+            self.assertFalse(
+                MetadataManager.has_lyric_files(audio, DownloadOptions(download_dir=root, save_lyric_file=True))
+            )
+            (root / "Artist - Song.lrc").write_text("x", encoding="utf-8")
+            self.assertTrue(
+                MetadataManager.has_lyric_files(audio, DownloadOptions(download_dir=root, save_lyric_file=True))
+            )
+            self.assertFalse(
+                MetadataManager.has_lyric_files(
+                    audio, DownloadOptions(download_dir=root, save_lyric_file=True, save_trans_lyric_file=True)
+                )
+            )
+
+    def test_existing_audio_gets_lyric_file_backfilled(self) -> None:
+        async def fake_get_song_urls(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("音频已存在时不应重新下载")
+
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                song = SongItem(title="Song", singer="Artist", mid="mid")
+                (root / "Artist - Song.flac").write_bytes(b"already here")
+                events: list[DownloadEvent] = []
+                service = MusicService()
+                service.metadata.get_lyrics = lambda mid: _async_value(  # type: ignore[method-assign]
+                    {"lyric": "[00:01.00]hello", "trans": ""}
+                )
+                try:
+                    with patch("qmdr.music.get_song_urls", fake_get_song_urls):
+                        result = await service.download_song(
+                            song,
+                            DownloadOptions(download_dir=root, quality_level=3, save_lyric_file=True),
+                            on_event=events.append,
+                        )
+                finally:
+                    await service.close()
+
+                self.assertTrue(result.success)
+                self.assertTrue(result.skipped)
+                lrc = root / "Artist - Song.lrc"
+                self.assertTrue(lrc.exists())
+                self.assertIn("hello", lrc.read_text(encoding="utf-8-sig"))
+                # 先补写歌词，再报跳过；音频不会被重下（get_song_urls 被替换成抛异常）
+                kinds = [e.kind for e in events]
+                self.assertIn("info", kinds)
+                self.assertIn("skipped", kinds)
+                self.assertLess(kinds.index("info"), kinds.index("skipped"))
+                self.assertTrue(any(e.kind == "info" and "补充歌词" in e.message for e in events))
+
+        asyncio.run(run())
+
+    def test_missing_lyrics_still_skips_without_redownload(self) -> None:
+        async def fake_get_song_urls(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("歌词取不到时也不应重下音频")
+
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                song = SongItem(title="Song", singer="Artist", mid="mid")
+                (root / "Artist - Song.flac").write_bytes(b"already here")
+                events: list[DownloadEvent] = []
+                service = MusicService()
+                service.metadata.get_lyrics = lambda mid: _async_value(None)  # type: ignore[method-assign]
+                try:
+                    with patch("qmdr.music.get_song_urls", fake_get_song_urls):
+                        result = await service.download_song(
+                            song,
+                            DownloadOptions(download_dir=root, quality_level=3, save_lyric_file=True),
+                            on_event=events.append,
+                        )
+                finally:
+                    await service.close()
+
+                self.assertTrue(result.success)
+                self.assertTrue(result.skipped)
+                self.assertEqual(events[-1].kind, "skipped")
+                self.assertFalse((root / "Artist - Song.lrc").exists())
+                # 不应出现任何下载尝试
+                self.assertNotIn("downloading", [e.kind for e in events])
+
+        asyncio.run(run())
 
     def test_coordinator_reports_empty_playlist_without_downloading(self) -> None:
         class FakeMusicService:

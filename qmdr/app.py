@@ -45,7 +45,7 @@ NAV_ITEMS = [
     (ft.Icons.SEARCH, "搜索下载"),
     (ft.Icons.LIBRARY_MUSIC, "歌单下载"),
     (ft.Icons.QUEUE_MUSIC, "下载队列"),
-    (ft.Icons.SETTINGS, "凭证设置"),
+    (ft.Icons.SETTINGS, "设置"),
 ]
 
 
@@ -95,6 +95,16 @@ class QmdrApp:
             options=[ft.DropdownOption(key=str(size), text=f"{size}px") for size in (150, 300, 500, 800)],
         )
         self.overwrite_checkbox = ft.Checkbox(label="覆盖已存在文件", value=False)
+        self.lyric_file_checkbox = ft.Checkbox(
+            label="保存独立歌词文件 (.lrc)",
+            value=False,
+            tooltip="与音频同目录同名，写入整首歌词；文件已存在且未勾选覆盖时不会重写",
+        )
+        self.trans_lyric_file_checkbox = ft.Checkbox(
+            label="另存翻译歌词 (.trans.lrc)",
+            value=False,
+            tooltip="需歌曲本身提供翻译歌词；勾选后会额外写出 .trans.lrc",
+        )
         self.external_api_input = ft.TextField(label="外部凭证 API（可选）", value="", expand=True)
 
         self.credential_text = ft.Text("正在检查凭证...", size=13)
@@ -451,6 +461,14 @@ class QmdrApp:
                                     self.overwrite_checkbox,
                                 ],
                             ),
+                            ft.Row(
+                                wrap=True,
+                                spacing=10,
+                                controls=[
+                                    self.lyric_file_checkbox,
+                                    self.trans_lyric_file_checkbox,
+                                ],
+                            ),
                         ],
                     ),
                     _section(
@@ -496,6 +514,8 @@ class QmdrApp:
             cover_size=clamp_int(self.cover_size_dropdown.value, 800, 150, 800),
             batch_size=clamp_int(self.batch_size_input.value, 5, 1, 12),
             overwrite=bool(self.overwrite_checkbox.value),
+            save_lyric_file=bool(self.lyric_file_checkbox.value),
+            save_trans_lyric_file=bool(self.trans_lyric_file_checkbox.value),
         )
 
     def save_download_dir_setting(self, show_message: bool = False) -> None:

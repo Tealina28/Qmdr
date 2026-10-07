@@ -183,11 +183,11 @@ class PlaylistService:
         except Exception as exc:  # noqa: BLE001 - 需要把网络错误转成可读提示
             if credential is None:
                 raise CredentialRequiredError(
-                    f"读取歌单失败，该歌单可能需要登录后才能访问。请在「凭证设置」登录后重试。（{exc}）"
+                    f"读取歌单失败，该歌单可能需要登录后才能访问。请在「设置」登录后重试。（{exc}）"
                 ) from exc
             raise
         if not songs and playlist.song_count and credential is None:
-            raise CredentialRequiredError("该歌单需要登录后才能访问。请在「凭证设置」登录后重试。")
+            raise CredentialRequiredError("该歌单需要登录后才能访问。请在「设置」登录后重试。")
         return songs
 
     async def resolve_share_link(self, url: str) -> str:

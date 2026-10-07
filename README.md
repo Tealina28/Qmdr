@@ -26,6 +26,7 @@ uv run flet run --recursive --ignore-dirs .venv,.agents,__pycache__ -a assets ma
 - 歌单预览和批量下载。
 - 歌单链接直接下载：粘贴歌单链接或歌单 ID 即可解析并下载，公开歌单无需登录。
 - 为下载文件写入封面、歌词和基础元数据。
+- 可选保存独立歌词文件（`.lrc`），与音频同目录同名。
 - 本地下载队列，显示进度和单曲状态。
 
 ## 歌单链接下载
@@ -42,7 +43,7 @@ uv run flet run --recursive --ignore-dirs .venv,.agents,__pycache__ -a assets ma
 - QQ 音乐分享短链 `https://c6.y.qq.com/base/fcgi-bin/u?__=xxxx`（自动跟随跳转）
 - 直接粘贴纯数字歌单 ID（即 `<歌单ID>` 本身），无需链接。
 
-公开歌单无需登录即可解析和下载；私有歌单或他人「我喜欢」会提示先到「凭证设置」登录后重试。
+公开歌单无需登录即可解析和下载；私有歌单或他人「我喜欢」会提示先到「设置」登录后重试。
 
 域名按 QQ 音乐官方白名单校验（`y.qq.com`、`i.y.qq.com`、`m.y.qq.com`、`c.y.qq.com`、`c6.y.qq.com`、
 `music.qq.com`、`qq.com`），白名单之外的链接会被拒绝——如果遇到未收录的域名，直接粘贴纯数字歌单 ID 即可。
@@ -51,6 +52,18 @@ uv run flet run --recursive --ignore-dirs .venv,.agents,__pycache__ -a assets ma
 `ryqq_v2` 路径、分享短链和纯数字歌单 ID。域名白名单取自
 [musicdl](https://github.com/CharlesPikachu/musicdl)（PolyForm Noncommercial License，仅参考思路，
 未复制其代码；本项目仍为 GPL-3.0）。
+
+## 歌词文件
+
+默认只把歌词内嵌到音频标签里。在「设置」页的「下载设置」中可额外开启：
+
+- **保存独立歌词文件 (.lrc)**：在音频同目录写出同名 `.lrc`，使用 UTF-8 BOM 编码，
+  避免部分播放器按本地代码页把中文读成乱码。
+- **另存翻译歌词 (.trans.lrc)**：额外写出 `.trans.lrc`；同时开启时，`.lrc` 会包含
+  原文与翻译（原文在上，空行后接翻译），供支持的播放器显示双语。
+
+若音频已存在但缺少歌词文件，会只补写 `.lrc` 而不重新下载音频。歌词文件已存在时，
+需勾选「覆盖已存在文件」才会重写。
 
 ## 免责声明
 

@@ -12,6 +12,8 @@ class DownloadOptions:
     cover_size: int = 800
     batch_size: int = 5
     overwrite: bool = False
+    save_lyric_file: bool = False
+    save_trans_lyric_file: bool = False
 
 
 @dataclass(slots=True)

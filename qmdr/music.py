@@ -133,8 +133,12 @@ class MetadataManager:
         song: SongItem,
         song_data: dict[str, Any],
         cover_size: int,
+        options: DownloadOptions | None = None,
+        on_event: DownloadCallback | None = None,
+        current: int = 1,
+        total: int = 1,
     ) -> None:
-        lyrics_data = await self._get_lyrics(song.mid)
+        lyrics_data = await self.get_lyrics(song.mid)
         suffix = file_path.suffix.lower()
         if suffix == ".flac":
             await self._add_metadata_to_flac(file_path, song, lyrics_data, song_data, cover_size)
@@ -142,6 +146,24 @@ class MetadataManager:
             await self._add_metadata_to_mp3(file_path, song, lyrics_data, song_data, cover_size)
         elif suffix == ".m4a":
             await self._add_metadata_to_mp4(file_path, song, lyrics_data, song_data, cover_size)
+
+        if options is None or not lyrics_data:
+            return
+        if not (lyrics_data.get("lyric") or lyrics_data.get("trans")):
+            return
+        written = self.write_lyrics_files(file_path, lyrics_data, options)
+        if written:
+            await emit_event(
+                on_event,
+                DownloadEvent(
+                    kind="info",
+                    message=f"已保存歌词文件: {'、'.join(path.name for path in written)}",
+                    current=current,
+                    total=total,
+                    song=song,
+                    file_path=file_path,
+                ),
+            )
 
     async def _add_metadata_to_flac(
         self,
@@ -237,11 +259,66 @@ class MetadataManager:
         except Exception as exc:  # noqa: BLE001
             raise MetadataError(f"MP4 元数据处理失败: {exc}") from exc
 
-    async def _get_lyrics(self, song_mid: str) -> dict[str, Any] | None:
+    async def get_lyrics(self, song_mid: str) -> dict[str, Any] | None:
         try:
             return await get_lyric(song_mid)
         except Exception:  # noqa: BLE001
             return None
+
+    def write_lyrics_files(
+        self,
+        file_path: Path,
+        lyrics_data: dict[str, Any],
+        options: DownloadOptions,
+    ) -> list[Path]:
+        """按选项写出独立歌词文件，返回实际写入的文件列表。
+
+        `.lrc` 与音频同名同目录；整首校对歌词与逐行翻译分别写各自后缀。
+        """
+        written: list[Path] = []
+        lyric_text = self._clean_lyric(lyrics_data.get("lyric"))
+        trans_text = self._clean_lyric(lyrics_data.get("trans"))
+        if options.save_lyric_file and lyric_text:
+            target = file_path.with_suffix(".lrc")
+            # 双语歌词是通行做法：原文在上，空行后接翻译。
+            body = f"{lyric_text}\n\n{trans_text}\n" if trans_text else lyric_text
+            if self._save_lyric_file(target, body, options):
+                written.append(target)
+        if options.save_trans_lyric_file and trans_text:
+            target = file_path.with_suffix(".trans.lrc")
+            if self._save_lyric_file(target, trans_text, options):
+                written.append(target)
+        return written
+
+    @staticmethod
+    def _clean_lyric(text: Any) -> str:
+        return text.strip() if isinstance(text, str) else ""
+
+    @staticmethod
+    def _save_lyric_file(target: Path, text: str, options: DownloadOptions) -> bool:
+        if target.exists() and not options.overwrite:
+            return False
+        try:
+            ensure_directory(target.parent)
+            # utf-8-sig：大量播放器按本地代码页读 .lrc，带 BOM 才不会把中文解成乱码。
+            target.write_text(text if text.endswith("\n") else f"{text}\n", encoding="utf-8-sig")
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def lyric_file_paths(file_path: Path, options: DownloadOptions) -> list[Path]:
+        """返回该音频按选项应当存在的歌词文件路径，用于跳过判断。"""
+        paths: list[Path] = []
+        if options.save_lyric_file:
+            paths.append(file_path.with_suffix(".lrc"))
+        if options.save_trans_lyric_file:
+            paths.append(file_path.with_suffix(".trans.lrc"))
+        return paths
+
+    @staticmethod
+    def has_lyric_files(file_path: Path, options: DownloadOptions) -> bool:
+        return all(path.exists() for path in MetadataManager.lyric_file_paths(file_path, options))
 
 
 class MusicService:
@@ -318,6 +395,9 @@ class MusicService:
         for file_type, quality_name in get_quality_strategy(options.quality_level):
             file_path = target_dir / f"{safe_name}{file_type.e}"
             if file_path.exists() and not options.overwrite:
+                # 音频已在，永不重下；只在开启了独立歌词选项且歌词缺失时补写歌词。
+                if not self.metadata.has_lyric_files(file_path, options):
+                    await self._backfill_lyric_files(file_path, song, options, on_event, current, total)
                 await emit_event(
                     on_event,
                     DownloadEvent(
@@ -419,7 +499,16 @@ class MusicService:
             return DownloadResult(False, song=song, quality=quality_name, error="文件过小，可能下载失败")
 
         try:
-            await self.metadata.add_metadata(file_path, song, song.raw, options.cover_size)
+            await self.metadata.add_metadata(
+                file_path,
+                song,
+                song.raw,
+                options.cover_size,
+                options=options,
+                on_event=on_event,
+                current=current,
+                total=total,
+            )
         except MetadataError as exc:
             await emit_event(
                 on_event,
@@ -446,6 +535,34 @@ class MusicService:
             ),
         )
         return DownloadResult(True, song=song, quality=quality_name, file_path=file_path)
+
+    async def _backfill_lyric_files(
+        self,
+        file_path: Path,
+        song: SongItem,
+        options: DownloadOptions,
+        on_event: DownloadCallback | None,
+        current: int,
+        total: int,
+    ) -> None:
+        """音频已存在但缺少歌词文件时补写歌词；无歌词可用时静默跳过。"""
+        lyrics_data = await self.metadata.get_lyrics(song.mid)
+        if not (lyrics_data and lyrics_data.get("lyric")):
+            return
+        written = self.metadata.write_lyrics_files(file_path, lyrics_data, options)
+        if not written:
+            return
+        await emit_event(
+            on_event,
+            DownloadEvent(
+                kind="info",
+                message=f"音频已存在，补充歌词文件: {'、'.join(path.name for path in written)}",
+                current=current,
+                total=total,
+                song=song,
+                file_path=file_path,
+            ),
+        )
 
     async def _save_response_to_file(
         self,
