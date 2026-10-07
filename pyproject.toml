@@ -1,6 +1,6 @@
 [project]
 name = "qmdr"
-version = "0.1.0"
+version = "0.3.0"
 description = "A Flet desktop GUI for QQ Music downloads"
 readme = "README.md"
 requires-python = ">=3.10"
