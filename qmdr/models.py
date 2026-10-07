@@ -35,7 +35,13 @@ class PlaylistItem:
     dir_id: int
     tid: int
     song_count: int = 0
+    owner_id: str = ""
+    owner_name: str = ""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def source_label(self) -> str:
+        return f"来自 {self.owner_name}" if self.owner_name else "链接歌单"
 
 
 @dataclass(slots=True)

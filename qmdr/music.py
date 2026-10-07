@@ -260,19 +260,34 @@ class MusicService:
         return [self.song_from_raw(item) for item in results or []]
 
     def song_from_raw(self, data: dict[str, Any]) -> SongItem:
-        singer_info = data.get("singer", [])
-        singer = "未知歌手"
-        if singer_info and isinstance(singer_info, list):
-            singer = singer_info[0].get("name", singer)
+        album = data.get("album") or {}
+        if not isinstance(album, dict):
+            album = {}
+        pay = data.get("pay") or {}
+        if not isinstance(pay, dict):
+            pay = {}
+        mid = data.get("mid") or data.get("songmid") or ""
         return SongItem(
-            title=data.get("title", "未知歌曲"),
-            singer=singer,
-            mid=data.get("mid", ""),
-            album_name=data.get("album", {}).get("name", ""),
-            album_mid=data.get("album", {}).get("mid", ""),
-            is_vip=data.get("pay", {}).get("pay_play", 0) != 0,
+            title=data.get("title") or data.get("name") or data.get("songname") or "未知歌曲",
+            singer=self._singer_from_raw(data.get("singer")),
+            mid=mid,
+            album_name=album.get("name") or data.get("albumname") or "",
+            album_mid=album.get("mid") or "",
+            is_vip=pay.get("pay_play", 0) != 0,
             raw=data,
         )
+
+    @staticmethod
+    def _singer_from_raw(singer_info: Any) -> str:
+        if isinstance(singer_info, str):
+            return singer_info or "未知歌手"
+        if isinstance(singer_info, list) and singer_info:
+            first = singer_info[0]
+            if isinstance(first, dict):
+                return first.get("name") or "未知歌手"
+            if isinstance(first, str):
+                return first or "未知歌手"
+        return "未知歌手"
 
     async def download_song(
         self,

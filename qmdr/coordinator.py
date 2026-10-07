@@ -122,6 +122,12 @@ class DownloadCoordinator:
     ) -> list[DownloadResult]:
         if self.playlist_service is None:
             raise RuntimeError("PlaylistService 未初始化")
+        if not songs:
+            await emit_event(
+                on_event,
+                DownloadEvent(kind="failed", message=f"歌单没有可下载的歌曲: {playlist.name}", total=0),
+            )
+            return []
         folder = self.playlist_service.playlist_folder(options.download_dir, playlist, user_id)
         await emit_event(
             on_event,

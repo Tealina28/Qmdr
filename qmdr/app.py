@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import flet as ft
@@ -56,17 +57,21 @@ class QmdrApp:
         self.playlist_service = None
         self.coordinator = None
         self.credential_required_error_type: type[Exception] | None = None
+        self.is_share_link: Callable[[str], bool] | None = None
 
         self.credential = None
         self.search_songs: list[SongItem] = []
         self.playlists: list[PlaylistItem] = []
         self.playlist_songs: list[SongItem] = []
+        self.songs_playlist: PlaylistItem | None = None
         self.selected_playlist: PlaylistItem | None = None
+        self.selected_playlist_from_link = False
         self.active_download = False
         self.qr_cancelled = False
         self.search_request_id = 0
         self.playlist_request_id = 0
         self.preview_request_id = 0
+        self.link_request_id = 0
         self.selected_nav_index = 0
         self.nav_collapsed = False
         self.app_icon_bytes = self.load_app_icon_bytes()
@@ -102,6 +107,9 @@ class QmdrApp:
         self.playlist_list = ft.ListView(expand=True, spacing=8, padding=0)
         self.playlist_preview = ft.ListView(expand=True, spacing=4, padding=0)
 
+        self.link_input = ft.TextField(label="歌单链接或歌单 ID", expand=True)
+        self.link_status = ft.Text("", size=13, color="#52616b")
+
         self.current_task_text = ft.Text("暂无任务", size=14, weight=ft.FontWeight.BOLD)
         self.progress_bar = ft.ProgressBar(value=0, bar_height=8, height=8, border_radius=8, track_gap=0)
         self.progress_text = ft.Text("0/0", size=13, color="#52616b")
@@ -121,6 +129,7 @@ class QmdrApp:
 
         self.search_input.on_submit = self.on_search
         self.musicid_input.on_submit = self.on_load_playlists
+        self.link_input.on_submit = self.on_load_link_playlist
         self.page.services.append(self.file_picker)
 
         self.views = [
@@ -168,13 +177,14 @@ class QmdrApp:
         from .coordinator import DownloadCoordinator
         from .credential_service import CredentialService
         from .music import MusicService
-        from .playlist import CredentialRequiredError, PlaylistService
+        from .playlist import CredentialRequiredError, PlaylistService, is_share_link
 
         self.credential_service = CredentialService()
         self.music_service = MusicService()
         self.playlist_service = PlaylistService(self.music_service)
         self.coordinator = DownloadCoordinator(self.music_service, self.playlist_service)
         self.credential_required_error_type = CredentialRequiredError
+        self.is_share_link = is_share_link
 
     def is_credential_required_error(self, exc: Exception) -> bool:
         return self.credential_required_error_type is not None and isinstance(exc, self.credential_required_error_type)
@@ -326,7 +336,30 @@ class QmdrApp:
                 spacing=14,
                 controls=[
                     _section(
-                        "歌单",
+                        "下载音质（对账号歌单和歌单链接均生效）",
+                        [self.playlist_quality_dropdown],
+                    ),
+                    _section(
+                        "歌单链接解析（公开歌单无需登录）",
+                        [
+                            ft.Row(
+                                controls=[
+                                    self.link_input,
+                                    ft.Button("解析歌单", icon=ft.Icons.LINK, on_click=self.on_load_link_playlist),
+                                    ft.Button("下载歌单", icon=ft.Icons.DOWNLOAD, on_click=self.on_download_link_playlist),
+                                ]
+                            ),
+                            ft.Text(
+                                "支持 y.qq.com/n/ryqq/playlist/<ID>、y.qq.com/n/ryqq_v2/playlist/<ID>、"
+                                "i.y.qq.com/n2/m/share/details/taoge.html?id=<ID>，或直接粘贴歌单 ID。",
+                                size=12,
+                                color="#8792a2",
+                            ),
+                            self.link_status,
+                        ],
+                    ),
+                    _section(
+                        "账号歌单解析",
                         [
                             ft.Row(
                                 controls=[
@@ -335,7 +368,6 @@ class QmdrApp:
                                     ft.Button("下载全部", icon=ft.Icons.DOWNLOAD, on_click=self.on_download_all_playlists),
                                 ]
                             ),
-                            self.playlist_quality_dropdown,
                             self.playlist_status,
                         ],
                     ),
@@ -624,14 +656,14 @@ class QmdrApp:
 
     async def preview_playlist(self, playlist: PlaylistItem) -> None:
         self.ensure_services()
-        user_id = (self.musicid_input.value or "").strip()
         self.selected_playlist = playlist
+        self.selected_playlist_from_link = False
         self.preview_request_id += 1
         request_id = self.preview_request_id
         self.playlist_preview.controls = [ft.Text("正在加载歌曲...")]
         self.page.update()
         try:
-            songs = await self.playlist_service.get_playlist_songs(playlist, user_id, self.credential)
+            songs = await self.fetch_playlist_songs(playlist)
         except Exception as exc:  # noqa: BLE001
             if request_id != self.preview_request_id:
                 return
@@ -641,15 +673,24 @@ class QmdrApp:
         if request_id != self.preview_request_id:
             return
         self.playlist_songs = songs
+        self.songs_playlist = playlist
         self.render_playlist_preview(playlist)
 
     def render_playlist_preview(self, playlist: PlaylistItem) -> None:
+        from_link = self.selected_playlist_from_link
         self.playlist_preview.controls.clear()
         self.playlist_preview.controls.append(
             ft.Row(
                 controls=[
                     ft.Text(f"{playlist.name}：{len(self.playlist_songs)} 首", weight=ft.FontWeight.BOLD, expand=True),
-                    ft.Button("下载此歌单", icon=ft.Icons.DOWNLOAD, on_click=lambda e: self.page.run_task(self.download_playlist, playlist)),
+                    ft.Button(
+                        "下载此歌单",
+                        icon=ft.Icons.DOWNLOAD,
+                        on_click=lambda e, item=playlist: self.page.run_task(
+                            self.on_download_link_playlist if from_link else self.download_playlist,
+                            item,
+                        ),
+                    ),
                 ]
             )
         )
@@ -658,21 +699,70 @@ class QmdrApp:
             self.playlist_preview.controls.append(ft.Text(f"{index}. {song.singer} - {song.title}{vip}", size=13))
         self.page.update()
 
-    async def download_playlist(self, playlist: PlaylistItem) -> None:
+    async def on_load_link_playlist(self, event: ft.Event | None = None) -> None:
+        self.ensure_services()
+        link = (self.link_input.value or "").strip()
+        if not link:
+            self.toast("请输入歌单链接或歌单 ID")
+            return
+        self.link_request_id += 1
+        request_id = self.link_request_id
+        self.link_status.value = "正在解析歌单..."
+        self.playlist_preview.controls.clear()
+        self.page.update()
+        try:
+            if self.is_share_link is not None and self.is_share_link(link):
+                self.link_status.value = "正在解析分享短链..."
+                self.page.update()
+                link = await self.playlist_service.resolve_share_link(link)
+            playlist = await self.playlist_service.fetch_playlist_by_link(link)
+            songs = await self.playlist_service.get_link_playlist_songs(playlist, self.credential)
+        except Exception as exc:  # noqa: BLE001
+            if request_id != self.link_request_id:
+                return
+            self.selected_playlist_from_link = False
+            self.link_status.value = f"解析失败: {exc}"
+            self.page.update()
+            return
+        if request_id != self.link_request_id:
+            return
+        self.selected_playlist = playlist
+        self.selected_playlist_from_link = True
+        self.playlist_songs = songs
+        self.songs_playlist = playlist
+        self.link_status.value = f"{playlist.name}（{playlist.source_label}）：{len(songs)} 首"
+        self.render_playlist_preview(playlist)
+
+    async def on_download_link_playlist(self, playlist: PlaylistItem) -> None:
+        self.ensure_services()
+        await self.download_playlist(playlist, from_link=True)
+
+    async def fetch_playlist_songs(self, playlist: PlaylistItem) -> list[SongItem]:
+        if self.selected_playlist_from_link:
+            return await self.playlist_service.get_link_playlist_songs(playlist, self.credential)
+        user_id = (self.musicid_input.value or "").strip()
+        if not user_id:
+            raise ValueError("请输入 musicid")
+        return await self.playlist_service.get_playlist_songs(playlist, user_id, self.credential)
+
+    async def download_playlist(self, playlist: PlaylistItem, from_link: bool = False) -> None:
         self.ensure_services()
         if self.active_download:
             self.toast("已有下载任务在运行")
             return
-        user_id = (self.musicid_input.value or "").strip()
-        if not user_id:
+        # 以调用方传入的来源为准，避免上一次预览链接歌单后残留的状态串到本次下载。
+        self.selected_playlist = playlist
+        self.selected_playlist_from_link = from_link
+        user_id = "" if from_link else (self.musicid_input.value or "").strip()
+        if not from_link and not user_id:
             self.toast("请输入 musicid")
             return
         self.set_download_running(True)
         self.switch_to_queue()
         try:
-            songs = self.playlist_songs if self.selected_playlist == playlist else []
+            songs = self.playlist_songs if self.songs_playlist == playlist else []
             if not songs:
-                songs = await self.playlist_service.get_playlist_songs(playlist, user_id, self.credential)
+                songs = await self.fetch_playlist_songs(playlist)
             await self.coordinator.download_playlist(playlist, user_id, songs, self.options(), self.credential, self.on_download_event)
         except Exception as exc:  # noqa: BLE001
             await self.on_download_event(DownloadEvent(kind="failed", message=f"歌单下载失败: {exc}", error=str(exc)))
